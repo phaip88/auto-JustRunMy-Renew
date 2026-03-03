@@ -11,7 +11,9 @@ from seleniumbase import SB
 LOGIN_URL = "https://justrunmy.app/id/Account/Login"
 DOMAIN    = "justrunmy.app"
 
-# 从环境变量获取账号密码和 TG 配置
+# ============================================================
+#  环境变量与全局变量
+# ============================================================
 EMAIL        = os.environ.get("JUSTRUNMY_EMAIL")
 PASSWORD     = os.environ.get("JUSTRUNMY_PASSWORD")
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
@@ -19,7 +21,11 @@ TG_CHAT_ID   = os.environ.get("TG_CHAT_ID")
 
 if not EMAIL or not PASSWORD:
     print("❌ 致命错误：未找到 JUSTRUNMY_EMAIL 或 JUSTRUNMY_PASSWORD 环境变量！")
+    print("💡 请检查 GitHub Repository Secrets 是否配置正确。")
     sys.exit(1)
+
+# 全局变量，用于动态保存网页上抓取到的应用名称
+DYNAMIC_APP_NAME = "未知应用"
 
 # ============================================================
 #  Telegram 推送模块
@@ -33,9 +39,9 @@ def send_tg_message(status_icon, status_text, time_left):
     local_time = time.gmtime(time.time() + 8 * 3600)
     current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
 
-    # 按照要求的格式拼接消息
+    # 按照格式拼接消息，动态注入抓取到的应用名称
     text = (
-        f"🖥 🇩🇪 JustRunMy DE\n"
+        f"🖥 {DYNAMIC_APP_NAME}\n"
         f"{status_icon} {status_text}\n"
         f"⏱️ 剩余: {time_left}\n"
         f"时间: {current_time_str}"
@@ -293,9 +299,11 @@ def login(sb) -> bool:
     return False
 
 # ============================================================
-#  自动续期模块
+#  自动续期模块 (动态抓取名称 + TG 通知)
 # ============================================================
 def renew(sb) -> bool:
+    global DYNAMIC_APP_NAME
+    
     print("\n" + "="*50)
     print("   🚀 开始自动续期流程")
     print("="*50)
@@ -304,14 +312,20 @@ def renew(sb) -> bool:
     sb.open("https://justrunmy.app/panel")
     time.sleep(3)
 
-    print("🖱️ 查找应用: JustRunMy DE")
+    print("🖱️ 自动读取应用名称...")
     try:
-        sb.wait_for_element('h3[title="JustRunMy DE"]', timeout=10)
-        sb.click('h3[title="JustRunMy DE"]')
+        # 等待带有 font-semibold 的 h3 标签加载
+        sb.wait_for_element('h3.font-semibold', timeout=10)
+        # 从网页中抓取真实的名称并保存到全局变量
+        DYNAMIC_APP_NAME = sb.get_text('h3.font-semibold')
+        print(f"🎯 成功抓取到应用名称: {DYNAMIC_APP_NAME}")
+        
+        # 直接点击刚才抓取到的元素
+        sb.click('h3.font-semibold')
         time.sleep(3)
         print(f"📍 成功进入应用详情页: {sb.get_current_url()}")
     except Exception as e:
-        print(f"❌ 找不到应用卡片 (JustRunMy DE): {e}")
+        print(f"❌ 找不到应用卡片: {e}")
         sb.save_screenshot("renew_app_not_found.png")
         send_tg_message("❌", "续期失败(找不到应用)", "未知")
         return False
@@ -351,6 +365,7 @@ def renew(sb) -> bool:
     try:
         sb.refresh()
         time.sleep(4)
+        # 根据页面结构获取剩余时间文本
         timer_text = sb.get_text('span.font-mono.text-xl')
         print(f"⏱️ 当前应用剩余时间: {timer_text}")
         
@@ -371,7 +386,7 @@ def renew(sb) -> bool:
         return False
 
 # ============================================================
-#  脚本执行入口 (可选代理)
+#  脚本执行入口
 # ============================================================
 def main():
     print("=" * 50)
