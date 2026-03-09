@@ -46,48 +46,85 @@ class Hy2Proxy:
         if not self.url:
             return False
         print("📡 启动 Hysteria2...")
-        
-        u = self.url.replace("hysteria2://", "").replace("hy2://", "")
-        parsed = urlparse("scheme://" + u)
-        params = parse_qs(parsed.query)
-        hostname = parsed.hostname
-        port = parsed.port
-        
-        if hostname and ':' in hostname:
-            server = f"[{hostname}]:{port}"
-        else:
-            server = f"{hostname}:{port}"
+        print(f"📝 代理 URL: {self.url[:60]}...")
 
-        cfg = {
-            "server": server,
-            "auth": unquote(parsed.username) if parsed.username else "",
-            "tls": {
-                "sni": params.get("sni", [hostname])[0],
-                "insecure": params.get("insecure", ["0"])[0] == "1",
-                "alpn": params.get("alpn", ["h3"])[0],
-            },
-            "socks5": {"listen": f"127.0.0.1:{SOCKS_PORT}"}
-        }
+        try:
+            u = self.url.replace("hysteria2://", "").replace("hy2://", "")
+            parsed = urlparse("scheme://" + u)
+            params = parse_qs(parsed.query)
+            hostname = parsed.hostname
+            port = parsed.port
 
-        path = "/tmp/hy2.json"
-        with open(path, "w") as f:
-            json.dump(cfg, f)
+            print(f"🔍 解析结果:")
+            print(f"   hostname: {hostname}")
+            print(f"   port: {port}")
+            print(f"   username: {parsed.username[:20] if parsed.username else 'None'}...")
 
-        self.proc = subprocess.Popen(
-            ["hysteria", "client", "-c", path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-            text=True
-        )
+            if hostname and ':' in hostname:
+                server = f"[{hostname}]:{port}"
+            else:
+                server = f"{hostname}:{port}"
 
-        for _ in range(30):
-            time.sleep(1)
-            with socket.socket() as s:
-                if s.connect_ex(("127.0.0.1", SOCKS_PORT)) == 0:
-                    print("✅ HY2 已就绪")
-                    return True
-        return False
+            cfg = {
+                "server": server,
+                "auth": unquote(parsed.username) if parsed.username else "",
+                "tls": {
+                    "sni": params.get("sni", [hostname])[0],
+                    "insecure": params.get("insecure", ["0"])[0] == "1",
+                    "alpn": params.get("alpn", ["h3"])[0],
+                },
+                "socks5": {"listen": f"127.0.0.1:{SOCKS_PORT}"}
+            }
+
+            print(f"📋 配置内容:")
+            print(f"   server: {cfg['server']}")
+            print(f"   sni: {cfg['tls']['sni']}")
+            print(f"   insecure: {cfg['tls']['insecure']}")
+            print(f"   alpn: {cfg['tls']['alpn']}")
+            print(f"   socks5: {cfg['socks5']['listen']}")
+
+            path = "/tmp/hy2.json"
+            with open(path, "w") as f:
+                json.dump(cfg, f)
+            print(f"✅ 配置文件已写入: {path}")
+
+            print(f"🚀 启动 hysteria 进程...")
+            self.proc = subprocess.Popen(
+                ["hysteria", "client", "-c", path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                text=True
+            )
+            print(f"✅ 进程已启动，PID: {self.proc.pid}")
+
+            for attempt in range(30):
+                time.sleep(1)
+                with socket.socket() as s:
+                    result = s.connect_ex(("127.0.0.1", SOCKS_PORT))
+                    if result == 0:
+                        print(f"✅ HY2 已就绪 (第 {attempt+1} 秒)")
+                        return True
+                    if attempt % 5 == 0:
+                        print(f"⏳ 等待连接... ({attempt+1}/30)")
+
+            print("❌ 30 秒内未能连接到 SOCKS5 端口")
+            # 打印进程输出用于调试
+            if self.proc.stdout:
+                try:
+                    stdout, stderr = self.proc.communicate(timeout=2)
+                    if stdout:
+                        print(f"📤 stdout: {stdout[:200]}")
+                    if stderr:
+                        print(f"📥 stderr: {stderr[:200]}")
+                except:
+                    pass
+            return False
+        except Exception as e:
+            print(f"❌ 启动代理异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def stop(self):
         if self.proc:
@@ -143,13 +180,11 @@ def send_tg_message(status_icon, status_text, time_left, ipinfo="未知", start_
     local_time = time.gmtime(time.time() + 8 * 3600)
     current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
     
-    # 计算执行时长
-    duration = ""
+    # 计算开始执行的时间
+    start_time_str = ""
     if start_time:
-        elapsed = time.time() - start_time
-        minutes = int(elapsed // 60)
-        seconds = int(elapsed % 60)
-        duration = f"\n⏱️ 执行耗时: {minutes}m {seconds}s"
+        start_local_time = time.gmtime(start_time + 8 * 3600)
+        start_time_str = time.strftime("%Y-%m-%d %H:%M:%S", start_local_time)
 
     # 按照格式拼接消息，动态注入抓取到的应用名称
     text = (
@@ -157,7 +192,8 @@ def send_tg_message(status_icon, status_text, time_left, ipinfo="未知", start_
         f"{status_icon} {status_text}\n"
         f"⏱️ 剩余: {time_left}\n"
         f"🌐 IP: {ipinfo}\n"
-        f"时间: {current_time_str}{duration}"
+        f"开始时间: {start_time_str}\n"
+        f"完成时间: {current_time_str}"
     )
 
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
@@ -447,6 +483,9 @@ def renew(sb, ipinfo="未知", start_time=None) -> bool:
         send_tg_message("❌", "续期失败(没有应用)", "未知", ipinfo, start_time)
         return False
 
+    # 记录续期结果
+    results = []
+
     # 逐个处理每个应用
     for i in range(app_count):
         print(f"\n{'='*50}")
@@ -477,6 +516,7 @@ def renew(sb, ipinfo="未知", start_time=None) -> bool:
         except Exception as e:
             print(f"❌ 无法点击第 {i+1} 个应用: {e}")
             sb.save_screenshot(f"renew_app_{i+1}_click_fail.png")
+            results.append(f"❌ {DYNAMIC_APP_NAME}")
             continue
 
         # 点击 Reset Timer 按钮
@@ -487,6 +527,7 @@ def renew(sb, ipinfo="未知", start_time=None) -> bool:
         except Exception as e:
             print(f"❌ 找不到 Reset Timer 按钮: {e}")
             sb.save_screenshot(f"renew_app_{i+1}_reset_btn_not_found.png")
+            results.append(f"❌ {DYNAMIC_APP_NAME}")
             continue
 
         # 检查续期弹窗内是否需要 CF 验证
@@ -495,6 +536,7 @@ def renew(sb, ipinfo="未知", start_time=None) -> bool:
             if not handle_turnstile(sb):
                 print("❌ 弹窗内的 Turnstile 验证失败")
                 sb.save_screenshot(f"renew_app_{i+1}_turnstile_fail.png")
+                results.append(f"❌ {DYNAMIC_APP_NAME}")
                 continue
         else:
             print("ℹ️ 弹窗内未检测到 Turnstile")
@@ -508,6 +550,7 @@ def renew(sb, ipinfo="未知", start_time=None) -> bool:
         except Exception as e:
             print(f"❌ 找不到 Just Reset 按钮: {e}")
             sb.save_screenshot(f"renew_app_{i+1}_just_reset_not_found.png")
+            results.append(f"❌ {DYNAMIC_APP_NAME}")
             continue
 
         # 验证最终倒计时状态
@@ -521,18 +564,25 @@ def renew(sb, ipinfo="未知", start_time=None) -> bool:
             if "2 days 23" in timer_text or "3 days" in timer_text:
                 print(f"✅ 应用 {i+1} 续期完成！")
                 sb.save_screenshot(f"renew_app_{i+1}_success.png")
-                send_tg_message("✅", f"续期完成 ({DYNAMIC_APP_NAME})", timer_text, ipinfo, start_time)
+                results.append(f"✅ {DYNAMIC_APP_NAME} - {timer_text}")
             else:
                 print(f"⚠️ 应用 {i+1} 倒计时似乎没有重置到最高值")
                 sb.save_screenshot(f"renew_app_{i+1}_warning.png")
-                send_tg_message("⚠️", f"续期异常 ({DYNAMIC_APP_NAME})", timer_text, ipinfo, start_time)
+                results.append(f"⚠️ {DYNAMIC_APP_NAME} - {timer_text}")
         except Exception as e:
             print(f"⚠️ 读取应用 {i+1} 倒计时失败: {e}")
             sb.save_screenshot(f"renew_app_{i+1}_timer_read_fail.png")
+            results.append(f"⚠️ {DYNAMIC_APP_NAME}")
 
     print("\n" + "="*50)
     print("   ✅ 所有应用续期流程完成")
     print("="*50)
+
+    # 发送总结消息
+    if results:
+        summary = "\n".join(results)
+        send_tg_message("📋", "续期总结", summary, ipinfo, start_time)
+
     return True
 
 # ============================================================
@@ -546,8 +596,14 @@ def main():
     # 记录开始时间
     start_time = time.time()
 
-    # 启动代理
-    proxy_manager, proxy_url = start_proxy_with_retry(max_retries=3)
+    # 检查代理配置
+    if HY2_PROXY_URL:
+        print(f"📡 检测到代理配置: {HY2_PROXY_URL[:50]}...")
+        # 启动代理
+        proxy_manager, proxy_url = start_proxy_with_retry(max_retries=3)
+    else:
+        print("ℹ️ 未配置 HY2_PROXY_URL，将使用直连模式")
+        proxy_manager, proxy_url = None, None
 
     sb_kwargs = {"uc": True, "test": True, "headless": False}
 
@@ -555,7 +611,7 @@ def main():
         print(f"🔗 挂载 Hysteria2 代理: {proxy_url}")
         sb_kwargs["proxy"] = proxy_url
     else:
-        print("🌐 未使用代理，直连访问")
+        print("🌐 使用直连访问")
 
     with SB(**sb_kwargs) as sb:
         print("✅ 浏览器已启动")
@@ -564,7 +620,10 @@ def main():
         ipinfo = "未知"
         try:
             sb.open("https://api.ipify.org/?format=json")
-            ipinfo = sb.get_text('body')
+            import json as json_lib
+            ip_json = sb.get_text('body')
+            ip_data = json_lib.loads(ip_json)
+            ipinfo = ip_data.get('ip', '未知')
             print(f"🌐 当前出口真实 IP: {ipinfo}")
         except Exception as e:
             print(f"⚠️ 获取 IP 信息失败: {e}")
